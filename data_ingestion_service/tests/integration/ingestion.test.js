@@ -191,11 +191,13 @@ describe('Data Ingestion Service - Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
-      expect(res.body.length).toBeGreaterThan(0);
+      expect(res.body.products).toBeDefined();
+      expect(Array.isArray(res.body.products)).toBe(true);
+      expect(res.body.products.length).toBeGreaterThan(0);
+      expect(res.body.total).toBeDefined();
 
       // Check product shape
-      const product = res.body[0];
+      const product = res.body.products[0];
       expect(product.product_id).toBeDefined();
       expect(product.product_name).toBeDefined();
       expect(product.category).toBeDefined();
