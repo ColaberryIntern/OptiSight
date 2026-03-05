@@ -232,8 +232,11 @@ const AIAssistant = () => {
   const alerts = useSelector(
     (state) => state.aiAssistant?.alerts ?? []
   );
+  const reduxError = useSelector(
+    (state) => state.aiAssistant?.error ?? null
+  );
   const userId = useSelector(
-    (state) => state.auth?.user?.id ?? state.auth?.user?.userId ?? null
+    (state) => state.auth?.user?.id ?? state.auth?.user?.userId ?? 'anonymous'
   );
 
   // Local state for standalone operation (when Redux slices aren't yet registered)
@@ -437,9 +440,9 @@ const AIAssistant = () => {
 
         {activeProcessing && <ThinkingIndicator executionSteps={executionSteps} />}
 
-        {localError && !activeProcessing && (
+        {(localError || reduxError) && !activeProcessing && (
           <ErrorMessage data-testid="error-message">
-            <span>Failed to get a response. Try again.</span>
+            <span>{localError || reduxError || 'Failed to get a response. Try again.'}</span>
           </ErrorMessage>
         )}
 

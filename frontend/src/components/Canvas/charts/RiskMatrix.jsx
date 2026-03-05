@@ -152,7 +152,7 @@ const RiskMatrix = ({ data, title }) => {
   return (
     <div
       ref={containerRef}
-      style={{ width: '100%', height: '100%', minHeight: 200 }}
+      style={{ width: '100%', height: 400, minHeight: 200, maxHeight: 500 }}
       data-testid="risk-matrix"
     >
       <svg ref={svgRef} style={{ width: '100%', height: '100%' }} />

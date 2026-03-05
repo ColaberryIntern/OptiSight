@@ -60,8 +60,10 @@ const ChartCard = styled.div`
   padding: ${({ theme }) => theme.spacing.md};
   box-shadow: ${({ theme }) => theme.shadows.sm};
   min-height: 300px;
+  max-height: 550px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 `;
 
 const ChartTitle = styled.h3`
