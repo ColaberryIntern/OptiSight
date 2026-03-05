@@ -7,6 +7,7 @@ COPY shared/ ./shared/
 RUN cd shared && npm install
 
 # Copy service package.json and install dependencies
+WORKDIR /app/service
 COPY package.json ./
 RUN npm install
 
