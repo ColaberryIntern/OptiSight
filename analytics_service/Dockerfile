@@ -7,12 +7,11 @@ COPY shared/ ./shared/
 RUN cd shared && npm install
 
 # Copy service package.json and install dependencies
-COPY analytics_service/package.json ./analytics_service/
-WORKDIR /app/analytics_service
+COPY package.json ./
 RUN npm install
 
 # Copy remaining service files
-COPY analytics_service/ .
+COPY . .
 
 EXPOSE 3003
 

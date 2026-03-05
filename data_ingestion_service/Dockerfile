@@ -7,12 +7,11 @@ COPY shared/ ./shared/
 RUN cd shared && npm install
 
 # Copy service package.json and install dependencies
-COPY data_ingestion_service/package.json ./data_ingestion_service/
-WORKDIR /app/data_ingestion_service
+COPY package.json ./
 RUN npm install
 
 # Copy remaining service files
-COPY data_ingestion_service/ .
+COPY . .
 
 EXPOSE 3002
 

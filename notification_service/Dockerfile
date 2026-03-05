@@ -7,12 +7,11 @@ COPY shared/ ./shared/
 RUN cd shared && npm install
 
 # Copy service package.json and install dependencies
-COPY notification_service/package.json ./notification_service/
-WORKDIR /app/notification_service
+COPY package.json ./
 RUN npm install
 
 # Copy remaining service files
-COPY notification_service/ .
+COPY . .
 
 EXPOSE 3005
 

@@ -300,7 +300,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Copy shared directory for Node.js services
-        if: matrix.service.name != 'ai-engine'
+        if: matrix.service.name != 'ai-engine' && matrix.service.name != 'gateway'
         run: cp -r shared ${{ matrix.service.context }}/shared || true
 
       - name: Build and push Docker image

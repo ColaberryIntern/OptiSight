@@ -7,12 +7,11 @@ COPY shared/ ./shared/
 RUN cd shared && npm install
 
 # Copy service package.json and install dependencies
-COPY recommendation_service/package.json ./recommendation_service/
-WORKDIR /app/recommendation_service
+COPY package.json ./
 RUN npm install
 
 # Copy remaining service files
-COPY recommendation_service/ .
+COPY . .
 
 EXPOSE 3004
 

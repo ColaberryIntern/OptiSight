@@ -7,12 +7,11 @@ COPY shared/ ./shared/
 RUN cd shared && npm install
 
 # Copy service package.json and install dependencies
-COPY user_service/package.json ./user_service/
-WORKDIR /app/user_service
+COPY package.json ./
 RUN npm install
 
 # Copy remaining service files
-COPY user_service/ .
+COPY . .
 
 EXPOSE 3001
 
