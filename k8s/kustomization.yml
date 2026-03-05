@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: optisight
+resources:
+  - namespace.yml
+  - configmap.yml
+  - secrets.yml
+  - postgres.yml
+  - redis.yml
+  - elasticsearch.yml
+  - kibana.yml
+  - user-service.yml
+  - data-ingestion-service.yml
+  - analytics-service.yml
+  - recommendation-service.yml
+  - notification-service.yml
+  - ai-engine.yml
+  - frontend.yml
+  - monitoring.yml
+  - ingress.yml

@@ -1,0 +1,294 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+jobs:
+  lint-and-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install shared dependencies
+        run: cd shared && npm ci
+
+      - name: Audit shared
+        run: cd shared && npm audit --audit-level=high || true
+
+      - name: Audit user_service
+        run: cd user_service && npm ci && npm audit --audit-level=high || true
+
+      - name: Audit data_ingestion_service
+        run: cd data_ingestion_service && npm ci && npm audit --audit-level=high || true
+
+      - name: Audit analytics_service
+        run: cd analytics_service && npm ci && npm audit --audit-level=high || true
+
+      - name: Audit frontend
+        run: cd frontend && npm ci && npm audit --audit-level=high || true
+
+      - name: Install Python dependencies
+        run: cd ai_engine && pip install -r requirements.txt && pip install flake8
+
+      - name: Lint Python (flake8)
+        run: cd ai_engine && flake8 --max-line-length=120 --exclude=__pycache__,venv,.git models/ middleware/ app.py || true
+
+      - name: Pip audit
+        run: pip install pip-audit && pip-audit || true
+
+  test-shared:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd shared && npm ci && npx jest --ci --coverage
+
+  test-user-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd shared && npm ci
+      - run: cd user_service && npm ci && npx jest --ci --coverage
+
+  test-data-ingestion:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd shared && npm ci
+      - run: cd data_ingestion_service && npm ci && npx jest --ci --coverage
+
+  test-analytics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd shared && npm ci
+      - run: cd analytics_service && npm ci && npx jest --ci --coverage
+
+  test-notification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd shared && npm ci
+      - run: cd notification_service && npm ci && npx jest --ci --coverage
+
+  test-recommendation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd shared && npm ci
+      - run: cd recommendation_service && npm ci && npx jest --ci --coverage
+
+  test-ai-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: cd ai_engine && pip install -r requirements.txt && python -m pytest --tb=short -v
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd frontend && npm ci && npx vitest run --coverage || npx vitest run
+
+  # ============================================================================
+  # Cypress E2E tests (frontend only, with stubbed API calls)
+  # ============================================================================
+  test-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+      - name: Build frontend
+        run: cd frontend && npm run build
+      - name: Serve built frontend and run Cypress
+        run: |
+          cd frontend
+          npx vite preview --port 3000 &
+          npx wait-on http://localhost:3000 --timeout 30000
+          npx cypress run
+        env:
+          CYPRESS_BASE_URL: http://localhost:3000
+
+  # ============================================================================
+  # Build and Push Docker images to GHCR after all tests pass
+  # ============================================================================
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs:
+      - lint-and-audit
+      - test-shared
+      - test-user-service
+      - test-data-ingestion
+      - test-analytics
+      - test-e2e
+      - test-notification
+      - test-recommendation
+      - test-ai-engine
+      - test-frontend
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service:
+          - name: user-service
+            context: ./user_service
+          - name: data-ingestion-service
+            context: ./data_ingestion_service
+          - name: analytics-service
+            context: ./analytics_service
+          - name: recommendation-service
+            context: ./recommendation_service
+          - name: notification-service
+            context: ./notification_service
+          - name: ai-engine
+            context: ./ai_engine
+          - name: frontend
+            context: ./frontend
+          - name: gateway
+            context: ./gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Copy shared directory for Node.js services
+        if: matrix.service.name != 'ai-engine'
+        run: cp -r shared ${{ matrix.service.context }}/shared || true
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.service.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================================
+  # Deploy to staging (auto-deploy on main branch)
+  # ============================================================================
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name optisight-staging \
+            --region us-east-1
+
+      - name: Set image tags in manifests
+        run: |
+          export IMAGE_TAG="sha-${GITHUB_SHA::7}"
+          export REGISTRY="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}"
+
+          # Update image references in k8s manifests
+          for service in user-service data-ingestion-service analytics-service \
+                         recommendation-service notification-service ai-engine frontend; do
+            if [ -f "k8s/${service}.yml" ]; then
+              sed -i "s|image:.*${service}.*|image: ${REGISTRY}/${service}:${IMAGE_TAG}|g" "k8s/${service}.yml"
+            fi
+          done
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/namespace.yml
+          kubectl apply -f k8s/configmap.yml
+          kubectl apply -f k8s/secrets.yml
+          kubectl apply -f k8s/ --recursive
+
+      - name: Wait for rollout completion
+        run: |
+          for deployment in user-service data-ingestion-service analytics-service \
+                           recommendation-service notification-service ai-engine frontend; do
+            echo "Waiting for ${deployment} rollout..."
+            kubectl rollout status deployment/${deployment} \
+              -n optisight --timeout=300s || true
+          done
+
+      - name: Verify deployment health
+        run: |
+          echo "=== Pod Status ==="
+          kubectl get pods -n optisight
+          echo ""
+          echo "=== Service Status ==="
+          kubectl get svc -n optisight

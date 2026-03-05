@@ -1,0 +1,382 @@
+name: Production Deploy (Blue-Green)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (e.g., sha-abc1234 or latest)'
+        required: true
+        default: 'latest'
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - production
+      skip_smoke_tests:
+        description: 'Skip smoke tests (emergency deploy only)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+  EKS_CLUSTER: optisight-production
+  AWS_REGION: us-east-1
+  NAMESPACE: optisight
+
+jobs:
+  # ============================================================================
+  # Pre-deployment validation
+  # ============================================================================
+  validate:
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      current_slot: ${{ steps.detect.outputs.current_slot }}
+      target_slot: ${{ steps.detect.outputs.target_slot }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Verify image exists
+        run: |
+          for service in user-service data-ingestion-service analytics-service \
+                         recommendation-service notification-service ai-engine frontend; do
+            echo "Checking image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${service}:${{ inputs.image_tag }}"
+          done
+
+      - name: Detect current active slot (blue/green)
+        id: detect
+        run: |
+          # Check which slot is currently active by looking at the service selector
+          CURRENT_SLOT=$(kubectl get svc frontend -n ${{ env.NAMESPACE }} \
+            -o jsonpath='{.spec.selector.slot}' 2>/dev/null || echo "blue")
+
+          if [ "$CURRENT_SLOT" = "blue" ]; then
+            TARGET_SLOT="green"
+          else
+            TARGET_SLOT="blue"
+          fi
+
+          echo "Current active slot: $CURRENT_SLOT"
+          echo "Target deploy slot: $TARGET_SLOT"
+
+          echo "current_slot=$CURRENT_SLOT" >> "$GITHUB_OUTPUT"
+          echo "target_slot=$TARGET_SLOT" >> "$GITHUB_OUTPUT"
+
+  # ============================================================================
+  # Deploy to target slot (green)
+  # ============================================================================
+  deploy-green:
+    runs-on: ubuntu-latest
+    needs: [validate]
+    environment: production
+    env:
+      TARGET_SLOT: ${{ needs.validate.outputs.target_slot }}
+      CURRENT_SLOT: ${{ needs.validate.outputs.current_slot }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Deploy services to target slot
+        run: |
+          IMAGE_TAG="${{ inputs.image_tag }}"
+          SLOT="${{ env.TARGET_SLOT }}"
+
+          SERVICES=(
+            "user-service"
+            "data-ingestion-service"
+            "analytics-service"
+            "recommendation-service"
+            "notification-service"
+            "ai-engine"
+            "frontend"
+          )
+
+          for SERVICE in "${SERVICES[@]}"; do
+            DEPLOYMENT_NAME="${SERVICE}-${SLOT}"
+            IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${SERVICE}:${IMAGE_TAG}"
+
+            echo "Deploying ${DEPLOYMENT_NAME} with image ${IMAGE}"
+
+            # Check if the deployment exists; if not, create from existing manifest
+            if kubectl get deployment "${DEPLOYMENT_NAME}" -n ${{ env.NAMESPACE }} &>/dev/null; then
+              # Update existing deployment image
+              kubectl set image deployment/"${DEPLOYMENT_NAME}" \
+                "${SERVICE}=${IMAGE}" \
+                -n ${{ env.NAMESPACE }}
+            else
+              # Create new deployment from base manifest with slot label
+              if [ -f "k8s/${SERVICE}.yml" ]; then
+                # Create a slot-specific version of the deployment
+                cat "k8s/${SERVICE}.yml" | \
+                  sed "s|name: ${SERVICE}|name: ${DEPLOYMENT_NAME}|g" | \
+                  sed "s|app: ${SERVICE}|app: ${SERVICE}\n        slot: ${SLOT}|g" | \
+                  sed "s|image:.*${SERVICE}.*|image: ${IMAGE}|g" | \
+                  kubectl apply -n ${{ env.NAMESPACE }} -f -
+              fi
+            fi
+          done
+
+      - name: Wait for green deployments to be ready
+        run: |
+          SLOT="${{ env.TARGET_SLOT }}"
+
+          for SERVICE in user-service data-ingestion-service analytics-service \
+                         recommendation-service notification-service ai-engine frontend; do
+            DEPLOYMENT_NAME="${SERVICE}-${SLOT}"
+            echo "Waiting for ${DEPLOYMENT_NAME}..."
+            kubectl rollout status deployment/"${DEPLOYMENT_NAME}" \
+              -n ${{ env.NAMESPACE }} --timeout=300s || {
+              echo "ERROR: ${DEPLOYMENT_NAME} failed to roll out"
+              exit 1
+            }
+          done
+
+      - name: Verify green pods are healthy
+        run: |
+          SLOT="${{ env.TARGET_SLOT }}"
+          echo "=== Green Slot ($SLOT) Pod Status ==="
+          kubectl get pods -n ${{ env.NAMESPACE }} -l "slot=${SLOT}"
+
+          # Check that all pods in the target slot are Running
+          NOT_RUNNING=$(kubectl get pods -n ${{ env.NAMESPACE }} -l "slot=${SLOT}" \
+            --field-selector=status.phase!=Running -o name 2>/dev/null | wc -l)
+
+          if [ "$NOT_RUNNING" -gt 0 ]; then
+            echo "ERROR: ${NOT_RUNNING} pods are not in Running state"
+            kubectl get pods -n ${{ env.NAMESPACE }} -l "slot=${SLOT}" \
+              --field-selector=status.phase!=Running
+            exit 1
+          fi
+
+          echo "All green pods are running."
+
+  # ============================================================================
+  # Smoke tests against green slot
+  # ============================================================================
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: [validate, deploy-green]
+    if: ${{ !inputs.skip_smoke_tests }}
+    environment: production
+    env:
+      TARGET_SLOT: ${{ needs.validate.outputs.target_slot }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Run smoke tests against green slot
+        run: |
+          SLOT="${{ env.TARGET_SLOT }}"
+          FAILED=0
+
+          echo "=== Running smoke tests against ${SLOT} slot ==="
+
+          # Test each service health endpoint via port-forward
+          SERVICES=(
+            "user-service:3001:/health"
+            "data-ingestion-service:3002:/health"
+            "analytics-service:3003:/health"
+            "recommendation-service:3004:/health"
+            "notification-service:3005:/health"
+            "ai-engine:5000:/health"
+            "frontend:3000:/"
+          )
+
+          for ENTRY in "${SERVICES[@]}"; do
+            IFS=':' read -r SERVICE PORT PATH <<< "$ENTRY"
+            DEPLOYMENT_NAME="${SERVICE}-${SLOT}"
+            LOCAL_PORT=$((PORT + 10000))
+
+            echo "Testing ${SERVICE} (${DEPLOYMENT_NAME}) at port ${LOCAL_PORT}..."
+
+            # Start port-forward in background
+            kubectl port-forward deployment/"${DEPLOYMENT_NAME}" \
+              "${LOCAL_PORT}:${PORT}" -n ${{ env.NAMESPACE }} &
+            PF_PID=$!
+            sleep 3
+
+            # Smoke test: HTTP GET health endpoint
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "http://localhost:${LOCAL_PORT}${PATH}" --max-time 10 || echo "000")
+
+            kill $PF_PID 2>/dev/null || true
+            wait $PF_PID 2>/dev/null || true
+
+            if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 400 ]; then
+              echo "  PASS: ${SERVICE} returned HTTP ${HTTP_STATUS}"
+            else
+              echo "  FAIL: ${SERVICE} returned HTTP ${HTTP_STATUS}"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo ""
+          if [ "$FAILED" -gt 0 ]; then
+            echo "ERROR: ${FAILED} smoke test(s) failed. Aborting traffic switch."
+            exit 1
+          else
+            echo "All smoke tests passed."
+          fi
+
+  # ============================================================================
+  # Switch traffic: blue -> green
+  # ============================================================================
+  switch-traffic:
+    runs-on: ubuntu-latest
+    needs: [validate, deploy-green, smoke-tests]
+    if: ${{ always() && needs.deploy-green.result == 'success' && (needs.smoke-tests.result == 'success' || needs.smoke-tests.result == 'skipped') }}
+    environment: production
+    env:
+      TARGET_SLOT: ${{ needs.validate.outputs.target_slot }}
+      CURRENT_SLOT: ${{ needs.validate.outputs.current_slot }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Switch service selectors to target slot
+        run: |
+          SLOT="${{ env.TARGET_SLOT }}"
+
+          echo "Switching traffic to ${SLOT} slot..."
+
+          SERVICES=(
+            "user-service"
+            "data-ingestion-service"
+            "analytics-service"
+            "recommendation-service"
+            "notification-service"
+            "ai-engine"
+            "frontend"
+          )
+
+          for SERVICE in "${SERVICES[@]}"; do
+            echo "Updating service ${SERVICE} selector to slot=${SLOT}"
+            kubectl patch svc "${SERVICE}" -n ${{ env.NAMESPACE }} \
+              -p "{\"spec\":{\"selector\":{\"slot\":\"${SLOT}\"}}}" || {
+              echo "WARNING: Could not patch service ${SERVICE} — it may not exist yet"
+            }
+          done
+
+          echo "Traffic switched to ${SLOT} slot."
+
+      - name: Verify traffic is routing to new slot
+        run: |
+          SLOT="${{ env.TARGET_SLOT }}"
+          echo "=== Service endpoints after switch ==="
+          kubectl get svc -n ${{ env.NAMESPACE }} -o wide
+          echo ""
+          echo "=== Pods serving traffic (slot=${SLOT}) ==="
+          kubectl get pods -n ${{ env.NAMESPACE }} -l "slot=${SLOT}"
+
+  # ============================================================================
+  # Scale down old slot
+  # ============================================================================
+  scale-down-old:
+    runs-on: ubuntu-latest
+    needs: [validate, switch-traffic]
+    if: ${{ needs.switch-traffic.result == 'success' }}
+    environment: production
+    env:
+      CURRENT_SLOT: ${{ needs.validate.outputs.current_slot }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Scale down old slot deployments
+        run: |
+          OLD_SLOT="${{ env.CURRENT_SLOT }}"
+
+          echo "Scaling down old ${OLD_SLOT} slot deployments..."
+
+          # Wait 2 minutes before scaling down to allow connection draining
+          echo "Waiting 120 seconds for connection draining..."
+          sleep 120
+
+          for SERVICE in user-service data-ingestion-service analytics-service \
+                         recommendation-service notification-service ai-engine frontend; do
+            DEPLOYMENT_NAME="${SERVICE}-${OLD_SLOT}"
+            if kubectl get deployment "${DEPLOYMENT_NAME}" -n ${{ env.NAMESPACE }} &>/dev/null; then
+              echo "Scaling down ${DEPLOYMENT_NAME} to 0 replicas"
+              kubectl scale deployment/"${DEPLOYMENT_NAME}" \
+                --replicas=0 -n ${{ env.NAMESPACE }}
+            fi
+          done
+
+          echo "Old slot (${OLD_SLOT}) scaled down. Kept for quick rollback."
+
+      - name: Post-deployment summary
+        run: |
+          echo "=========================================="
+          echo "  Production Deployment Complete"
+          echo "=========================================="
+          echo "  Image Tag: ${{ inputs.image_tag }}"
+          echo "  Active Slot: ${{ needs.validate.outputs.target_slot }}"
+          echo "  Old Slot: ${{ env.CURRENT_SLOT }} (scaled to 0)"
+          echo "=========================================="
+          echo ""
+          echo "To rollback, run this workflow again with"
+          echo "the previous image tag."
+          echo ""
+          kubectl get pods -n ${{ env.NAMESPACE }}

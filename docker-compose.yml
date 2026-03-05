@@ -1,0 +1,309 @@
+services:
+  # ── PostgreSQL Database ──────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: retail_insight
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: retail_insight
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U retail_insight"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── User Service (Node.js, port 3001) ───────────────────────────────
+  user_service:
+    build:
+      context: .
+      dockerfile: user_service/Dockerfile
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://retail_insight:changeme@postgres:5432/retail_insight
+      JWT_SECRET: dev_jwt_secret_change_in_production
+      SERVICE_NAME: user_service
+      NODE_ENV: development
+      USER_SERVICE_PORT: 3001
+      BCRYPT_SALT_ROUNDS: 10
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>{if(!r.ok)throw 1})"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Data Ingestion Service (Node.js, port 3002) ─────────────────────
+  data_ingestion_service:
+    build:
+      context: .
+      dockerfile: data_ingestion_service/Dockerfile
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://retail_insight:changeme@postgres:5432/retail_insight
+      SERVICE_NAME: data_ingestion_service
+      NODE_ENV: development
+      DATA_INGESTION_PORT: 3002
+      JWT_SECRET: dev_jwt_secret_change_in_production
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3002/health').then(r=>{if(!r.ok)throw 1})"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Analytics Service (Node.js, port 3003) ──────────────────────────
+  analytics_service:
+    build:
+      context: .
+      dockerfile: analytics_service/Dockerfile
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://retail_insight:changeme@postgres:5432/retail_insight
+      SERVICE_NAME: analytics_service
+      NODE_ENV: development
+      ANALYTICS_SERVICE_PORT: 3003
+      JWT_SECRET: dev_jwt_secret_change_in_production
+      REDIS_URL: redis://redis:6379
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3003/health').then(r=>{if(!r.ok)throw 1})"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Recommendation Service (Node.js, port 3004) ─────────────────────
+  recommendation_service:
+    build:
+      context: .
+      dockerfile: recommendation_service/Dockerfile
+    ports:
+      - "3004:3004"
+    depends_on:
+      ai_engine:
+        condition: service_healthy
+    environment:
+      SERVICE_NAME: recommendation_service
+      NODE_ENV: development
+      RECOMMENDATION_SERVICE_PORT: 3004
+      JWT_SECRET: dev_jwt_secret_change_in_production
+      AI_ENGINE_URL: http://ai_engine:5000
+      DATA_INGESTION_URL: http://data_ingestion_service:3002
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3004/health').then(r=>{if(!r.ok)throw 1})"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Notification Service (Node.js, port 3005) ───────────────────────
+  notification_service:
+    build:
+      context: .
+      dockerfile: notification_service/Dockerfile
+    ports:
+      - "3005:3005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://retail_insight:changeme@postgres:5432/retail_insight
+      SERVICE_NAME: notification_service
+      NODE_ENV: development
+      NOTIFICATION_SERVICE_PORT: 3005
+      JWT_SECRET: dev_jwt_secret_change_in_production
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3005/health').then(r=>{if(!r.ok)throw 1})"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Redis Cache ─────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── AI Engine (Python Flask, port 5000) ──────────────────────────────
+  ai_engine:
+    build:
+      context: ai_engine/
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FLASK_ENV: development
+      DATABASE_URL: postgres://retail_insight:changeme@postgres:5432/retail_insight
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-placeholder}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Prometheus (port 9090) ───────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Grafana (port 3100) ─────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3100:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Elasticsearch (port 9200) ──────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Kibana (port 5601) ─────────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.0
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── Frontend (React + nginx, port 3000) ─────────────────────────────
+  frontend:
+    build:
+      context: frontend/
+    ports:
+      - "3010:3000"
+    depends_on:
+      - user_service
+      - analytics_service
+      - recommendation_service
+      - data_ingestion_service
+      - notification_service
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+  # ── API Gateway (nginx, port 80/443) ────────────────────────────────
+  gateway:
+    build:
+      context: gateway/
+    ports:
+      - "8080:80"
+      - "8443:443"
+    depends_on:
+      - user_service
+      - data_ingestion_service
+      - analytics_service
+      - recommendation_service
+      - notification_service
+      - frontend
+    restart: unless-stopped
+    networks:
+      - retail_insight_network
+
+networks:
+  retail_insight_network:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  elasticsearch_data:

@@ -1,0 +1,33 @@
+{
+  "name": "@retail-insight/analytics_service",
+  "version": "1.0.0",
+  "description": "Analytics and reporting service for OptiSight",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "jest --forceExit --detectOpenHandles",
+    "migrate": "knex migrate:latest",
+    "migrate:rollback": "knex migrate:rollback",
+    "seed": "knex seed:run"
+  },
+  "dependencies": {
+    "@retail-insight/shared": "file:../shared",
+    "axios": "^1.13.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "knex": "^3.1.0",
+    "pg": "^8.13.1",
+    "socket.io": "^4.8.1",
+    "uuid": "^11.0.5"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jsonwebtoken": "^9.0.3",
+    "nock": "^14.0.11",
+    "nodemon": "^3.1.9",
+    "supertest": "^7.0.0"
+  }
+}

@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: optisight
+  labels:
+    app: prometheus
+    tier: monitoring
+    app.kubernetes.io/part-of: optisight-ai
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: 'user_service'
+        static_configs:
+          - targets: ['user-service:3001']
+        metrics_path: /metrics
+
+      - job_name: 'data_ingestion_service'
+        static_configs:
+          - targets: ['data-ingestion-service:3002']
+        metrics_path: /metrics
+
+      - job_name: 'analytics_service'
+        static_configs:
+          - targets: ['analytics-service:3003']
+        metrics_path: /metrics
+
+      - job_name: 'recommendation_service'
+        static_configs:
+          - targets: ['recommendation-service:3004']
+        metrics_path: /metrics
+
+      - job_name: 'notification_service'
+        static_configs:
+          - targets: ['notification-service:3005']
+        metrics_path: /metrics
+
+      - job_name: 'ai_engine'
+        static_configs:
+          - targets: ['ai-engine:5000']
+        metrics_path: /metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: optisight
+  labels:
+    app: prometheus
+    tier: monitoring
+    app.kubernetes.io/part-of: optisight-ai
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: http
+  selector:
+    app: prometheus
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: optisight
+  labels:
+    app: prometheus
+    tier: monitoring
+    app.kubernetes.io/part-of: optisight-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+        tier: monitoring
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.48.0
+          ports:
+            - containerPort: 9090
+              name: http
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=15d
+            - --web.enable-lifecycle
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus
+            - name: prometheus-data
+              mountPath: /prometheus
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+        - name: prometheus-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: optisight
+  labels:
+    app: grafana
+    tier: monitoring
+    app.kubernetes.io/part-of: optisight-ai
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3100
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: grafana
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: optisight
+  labels:
+    app: grafana
+    tier: monitoring
+    app.kubernetes.io/part-of: optisight-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        tier: monitoring
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.2.0
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_SERVER_HTTP_PORT
+              value: "3000"
+          volumeMounts:
+            - name: grafana-data
+              mountPath: /var/lib/grafana
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: grafana-data
+          emptyDir: {}
