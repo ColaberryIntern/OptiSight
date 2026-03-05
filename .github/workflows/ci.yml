@@ -65,43 +65,124 @@ jobs:
 
   test-user-service:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: retail_insight
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: retail_insight
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U retail_insight"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: cd shared && npm ci
-      - run: cd user_service && npm ci && npx jest --ci --coverage
+      - run: cd user_service && npm ci
+      - name: Run migrations
+        run: cd user_service && npx knex migrate:latest
+        env:
+          DATABASE_URL: postgres://retail_insight:changeme@localhost:5433/retail_insight
+      - run: cd user_service && npx jest --ci --coverage
 
   test-data-ingestion:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: retail_insight
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: retail_insight
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U retail_insight"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: cd shared && npm ci
-      - run: cd data_ingestion_service && npm ci && npx jest --ci --coverage
+      - run: cd data_ingestion_service && npm ci
+      - name: Run migrations and seed
+        run: cd data_ingestion_service && npx knex migrate:latest && npx knex seed:run
+        env:
+          DATABASE_URL: postgres://retail_insight:changeme@localhost:5433/retail_insight
+      - run: cd data_ingestion_service && npx jest --ci --coverage
 
   test-analytics:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: retail_insight
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: retail_insight
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U retail_insight"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: cd shared && npm ci
-      - run: cd analytics_service && npm ci && npx jest --ci --coverage
+      - run: cd data_ingestion_service && npm ci
+      - name: Run data_ingestion migrations and seed (analytics depends on these tables)
+        run: cd data_ingestion_service && npx knex migrate:latest && npx knex seed:run
+        env:
+          DATABASE_URL: postgres://retail_insight:changeme@localhost:5433/retail_insight
+      - run: cd analytics_service && npm ci
+      - name: Run analytics migrations
+        run: cd analytics_service && npx knex migrate:latest
+        env:
+          DATABASE_URL: postgres://retail_insight:changeme@localhost:5433/retail_insight
+      - run: cd analytics_service && npx jest --ci --coverage
 
   test-notification:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: retail_insight
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: retail_insight
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U retail_insight"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: cd shared && npm ci
-      - run: cd notification_service && npm ci && npx jest --ci --coverage
+      - run: cd notification_service && npm ci
+      - name: Run migrations
+        run: cd notification_service && npx knex migrate:latest
+        env:
+          DATABASE_URL: postgres://retail_insight:changeme@localhost:5433/retail_insight
+      - run: cd notification_service && npx jest --ci --coverage
 
   test-recommendation:
     runs-on: ubuntu-latest
